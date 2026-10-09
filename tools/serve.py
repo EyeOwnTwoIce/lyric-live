@@ -20,6 +20,12 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 class Handler(SimpleHTTPRequestHandler):
+    # HTTP/1.1 habilita keep-alive. Con el HTTP/1.0 por defecto el servidor
+    # cierra la conexion despues de cada respuesta; el navegador intenta
+    # reutilizarla, recibe un reset y carga los modulos ES a medias, lo que
+    # produce errores fantasma del tipo "Unexpected token '}'".
+    protocol_version = 'HTTP/1.1'
+
     extensions_map = {
         **SimpleHTTPRequestHandler.extensions_map,
         ".js": "text/javascript",
