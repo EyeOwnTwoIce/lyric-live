@@ -1023,15 +1023,18 @@ async function runDemo() {
   }
 
   if (!result.ok) {
+    app.lastResult = summarizeResult(result);
     handleFailure(result);
     return;
   }
   if (!result.matched) {
+    app.lastResult = summarizeResult(result);
     setState(STATE.NO_MATCH);
     app.renderer.setHint('El audio de ejemplo no se ha reconocido. Prueba de nuevo.');
     return;
   }
 
+  app.lastResult = summarizeResult(result);
   setState(STATE.SYNCED);
   await handleMatch(result, { wallEnd: nowSec(), clipSeconds: 0 });
   if (!app.frame) startPlaybackLoop();
