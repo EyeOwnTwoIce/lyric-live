@@ -68,6 +68,11 @@ const app = {
   inFlight: false,
   errorBackoffIndex: 0,
   wakeLock: null,
+  deliveryTimer: 0,
+  lastResult: null,
+  lastFramesSeen: 0,
+  stallCount: 0,
+  reacquiring: false,
   bannerShownForDrift: false,
   pauseNoticeShown: false,
   resyncPending: false,
@@ -257,6 +262,7 @@ async function startListening() {
     setState(STATE.SEARCHING);
     app.renderer.setHint('Escuchando… el primer reconocimiento tarda unos 10-15 segundos.');
     startPlaybackLoop();
+    startDeliveryWatchdog();
     scheduleNext(0);
   } catch (err) {
     logError('No se pudo iniciar la captura', err);
@@ -279,9 +285,86 @@ function permissionMessage(err) {
   return (err && err.message) || 'Error desconocido al abrir el microfono.';
 }
 
+/**
+ * Vigilante de entrega de audio.
+ * Si el tap del microfono no entrega nada, antes la app se quedaba en
+ * "Escuchando…" indefinidamente sin decir nada: parecia colgada. Ahora lo
+ * detecta y lo explica.
+ */
+function startDeliveryWatchdog() {
+  clearTimeout(app.deliveryTimer);
+  app.deliveryTimer = setTimeout(() => {
+    if (!app.capture.active) return;
+    if (app.capture.isDelivering()) return;
+    logError('El microfono no entrega audio', app.capture.info());
+    setState(STATE.ERROR);
+    showError(
+      'El micrófono no está entregando audio (0 fragmentos). Cierra otras apps que lo usen y vuelve a pulsar Escuchar. En iOS: Ajustes > Safari > Micrófono.',
+      null,
+    );
+    renderDiagnostics();
+  }, 5000);
+}
+
+/**
+ * Comprueba que sigan llegando fragmentos de audio.
+ * En iOS el microfono puede morir en silencio (una llamada entrante, cambiar de
+ * app, bloquear la pantalla). Antes eso dejaba la app "escuchando" sin oir nada
+ * para siempre. Ahora se detecta y se reabre.
+ */
+function checkCaptureAlive() {
+  if (!app.capture.active || document.hidden || app.reacquiring) return;
+  const frames = app.capture.framesReceived;
+  if (frames === app.lastFramesSeen) {
+    app.stallCount += 1;
+    if (app.stallCount >= 2) {
+      app.stallCount = 0;
+      warn('El microfono dejo de entregar audio; reabriendo');
+      reacquireCapture();
+    }
+  } else {
+    app.stallCount = 0;
+  }
+  app.lastFramesSeen = frames;
+}
+
+/** Reabre el microfono conservando la sesion de escucha. */
+async function reacquireCapture() {
+  if (!app.capture.active || app.reacquiring) return;
+  app.reacquiring = true;
+  try {
+    app.capture.stop();
+    const captureInfo = await app.capture.start();
+    app.capture.onLevel = (level) => app.waveform.push(level);
+    app.waveform.start();
+    app.lastFramesSeen = 0;
+    app.stallCount = 0;
+    app.renderer.setDevice(
+      `Micrófono: ${captureInfo.deviceLabel} · ${captureInfo.mode} · ${captureInfo.constraintLabel}`,
+    );
+    startDeliveryWatchdog();
+    info('Microfono reabierto', captureInfo);
+    if (app.state === STATE.ERROR || app.state === STATE.PAUSED) {
+      hideError();
+      setState(STATE.SEARCHING);
+      scheduleNext(0);
+    }
+  } catch (err) {
+    logError('No se pudo reabrir el microfono', err);
+    setState(STATE.ERROR);
+    showError(permissionMessage(err), null);
+  } finally {
+    app.reacquiring = false;
+  }
+}
+
 function stopListening() {
   clearTimeout(app.timer);
   app.timer = 0;
+  clearTimeout(app.deliveryTimer);
+  app.deliveryTimer = 0;
+  app.stallCount = 0;
+  app.lastFramesSeen = 0;
   if (app.frame) cancelAnimationFrame(app.frame);
   app.frame = 0;
   app.capture.onLevel = null;
@@ -333,10 +416,11 @@ async function buildClip(seconds) {
   if (!raw) return null;
 
   const wallEnd = nowSec();
-  if (rms(raw) < CONFIG.capture.silenceRms) return { silent: true, wallEnd };
+  const level = rms(raw);
+  if (level < CONFIG.capture.silenceRms) return { silent: true, wallEnd, level };
 
   const trimmed = trimSilence(raw, CONFIG.capture.silenceRms) || raw;
-  if (trimmed.length < app.capture.sampleRate * 2) return { silent: true, wallEnd };
+  if (trimmed.length < app.capture.sampleRate * 2) return { silent: true, wallEnd, level };
 
   const resampled = await downsample(
     trimmed,
@@ -355,7 +439,10 @@ async function runRecognition() {
     return;
   }
   if (clip.silent) {
-    app.renderer.setHint('No se oye musica todavia. Acerca el dispositivo a la fuente de sonido.');
+    const pct = Math.round((clip.level || 0) * 1000) / 10;
+    app.renderer.setHint(
+      `No se oye musica todavia (nivel medido ${pct} %). Acerca el dispositivo a la fuente de sonido.`,
+    );
     scheduleNext(2000);
     return;
   }
@@ -380,6 +467,7 @@ async function runRecognition() {
  * promesa sin capturar y la app se quedaba muda para siempre.
  */
 async function handleRecognition(result, ctx) {
+  app.lastResult = summarizeResult(result);
   try {
     if (!result || !result.ok) {
       handleFailure(result);
@@ -394,6 +482,17 @@ async function handleRecognition(result, ctx) {
     logError('Error procesando el reconocimiento', err);
     scheduleNext(intervalForState());
   }
+}
+
+/** Resumen de una linea del ultimo intento, para el panel de diagnostico. */
+function summarizeResult(result) {
+  if (!result) return 'sin respuesta';
+  if (!result.ok) {
+    const code = result.errorCode ? ` (${result.errorCode})` : '';
+    return `error ${result.code}${code}: ${result.message}`;
+  }
+  if (!result.matched) return 'sin coincidencia';
+  return `${result.artist} — ${result.title} (timecode ${result.timecodeSec}s)`;
 }
 
 function handleFailure(result) {
@@ -674,6 +773,7 @@ function doResync(reason) {
 function startPlaybackLoop() {
   if (app.frame) cancelAnimationFrame(app.frame);
   let lastConfidenceAt = 0;
+  let lastStallCheckAt = 0;
   const loop = () => {
     const position = app.engine.positionAt();
     app.renderer.updatePlayback(position);
@@ -681,6 +781,17 @@ function startPlaybackLoop() {
     const now = nowSec();
     if (now - lastConfidenceAt > 0.5) {
       lastConfidenceAt = now;
+      if (app.capture.active) {
+        const frag = app.capture.framesReceived;
+        const lvl = Math.round((app.capture.lastLevel || 0) * 100);
+        app.renderer.setDevice(
+          `Micrófono: ${app.capture.deviceLabel || '—'} · ${app.capture.mode} · ${frag} fragmentos · nivel ${lvl} %`,
+        );
+      }
+      if (now - lastStallCheckAt > 5) {
+        lastStallCheckAt = now;
+        checkCaptureAlive();
+      }
       app.renderer.setConfidence(app.engine.confidence());
       app.renderer.setOffsetDisplay(app.engine.manualOffsetSec);
       if (app.engine.severity === SEVERITY.NONE) {
@@ -769,6 +880,19 @@ function onVisibilityChange() {
     debug('No se pudo reanudar el AudioContext', err);
   }
   requestWakeLock();
+
+  // iOS suele soltar la pista al suspender la pagina: si la pista ya no esta
+  // viva, reabrimos el microfono en lugar de quedarnos escuchando el vacio.
+  const track =
+    app.capture.stream && app.capture.stream.getAudioTracks
+      ? app.capture.stream.getAudioTracks()[0]
+      : null;
+  if (!track || track.readyState !== 'live') {
+    warn('La pista de audio ya no esta viva tras volver del segundo plano');
+    reacquireCapture();
+    return;
+  }
+
   setState(STATE.SEARCHING);
   scheduleNext(0);
 }
@@ -832,6 +956,9 @@ function renderDiagnostics() {
     ['Deriva', formatOffset(app.engine.driftSec)],
     ['Confianza', formatPercent(app.engine.confidence())],
     ['Captura', app.capture.mode],
+    ['Procesado', app.capture.constraintLabel || '—'],
+    ['Micrófono', `${app.capture.framesReceived} fragmentos · nivel ${formatPercent(app.capture.lastLevel || 0)}`],
+    ['Último intento', app.lastResult || '—'],
   ];
   dl.textContent = '';
   rows.forEach(([key, value]) => {

@@ -17,14 +17,19 @@ export class MicCapture {
     this.stream = null;
     this.source = null;
     this.node = null;
+    this.sink = null;
     this.analyser = null;
     this.sampleRate = 0;
     this.buffer = null;
     this.writePos = 0;
     this.framesWritten = 0;
+    this.framesReceived = 0;
+    this.lastLevel = 0;
+    this.levelTimer = 0;
     this.active = false;
     this.mode = 'none';
     this.deviceLabel = '';
+    this.constraintLabel = '';
     this.onLevel = null;
   }
 
@@ -40,17 +45,46 @@ export class MicCapture {
       });
     }
 
-    const constraints = {
-      audio: {
-        echoCancellation: false,
-        noiseSuppression: false,
-        autoGainControl: false,
-        channelCount: 1,
+    // Escalera de constraints. iOS/Safari ha rechazado historicamente
+    // constraints como channelCount con OverconstrainedError: si eso pasa,
+    // preferimos microfono con procesado de voz antes que no tener microfono.
+    const ladder = [
+      {
+        label: 'procesado desactivado',
+        audio: {
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+          channelCount: 1,
+        },
       },
-      video: false,
-    };
+      {
+        label: 'procesado desactivado, sin channelCount',
+        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+      },
+      { label: 'por defecto', audio: true },
+    ];
 
-    this.stream = await navigator.mediaDevices.getUserMedia(constraints);
+    let lastError = null;
+    for (const attempt of ladder) {
+      try {
+        this.stream = await navigator.mediaDevices.getUserMedia({
+          audio: attempt.audio,
+          video: false,
+        });
+        this.constraintLabel = attempt.label;
+        if (attempt.label !== ladder[0].label) {
+          warn('El navegador rechazo las constraints mejores; usando', attempt.label);
+        }
+        break;
+      } catch (err) {
+        lastError = err;
+        // Si es permiso denegado no insistimos: no va a mejorar.
+        if (err && (err.name === 'NotAllowedError' || err.name === 'SecurityError')) throw err;
+        warn('Constraints rechazadas:', attempt.label, err && err.name);
+      }
+    }
+    if (!this.stream) throw lastError || new Error('No se pudo abrir el microfono.');
 
     const AudioCtor = globalThis.AudioContext || globalThis.webkitAudioContext;
     if (!AudioCtor) {
@@ -68,6 +102,8 @@ export class MicCapture {
 
     this.buildAnalyser();
     this.active = true;
+    this.framesReceived = 0;
+    this.startLevelMeter();
     this.deviceLabel = await this.resolveDeviceLabel();
     info('Captura iniciada', {
       sampleRate: this.sampleRate,
@@ -96,6 +132,15 @@ export class MicCapture {
         const node = new AudioWorkletNode(this.ctx, 'recorder');
         node.port.onmessage = (event) => this.push(event.data);
         this.source.connect(node);
+        // CRITICO: el navegador solo "tira" de los nodos alcanzables desde
+        // destination. Un AudioWorkletNode colgado sin salida puede no
+        // procesarse nunca (el processor no se ejecuta y no llega ni un frame).
+        // Lo conectamos a un nodo de ganancia 0: mantiene el grafo vivo y no
+        // devuelve el microfono a los altavoces.
+        this.sink = this.ctx.createGain();
+        this.sink.gain.value = 0;
+        node.connect(this.sink);
+        this.sink.connect(this.ctx.destination);
         this.node = node;
         this.mode = 'worklet';
         return;
@@ -134,7 +179,27 @@ export class MicCapture {
       this.writePos = (this.writePos + 1) % size;
     }
     this.framesWritten += chunk.length;
-    if (this.onLevel && this.analyser) this.onLevel(this.readLevel());
+    this.framesReceived += 1;
+  }
+
+  /**
+   * Medidor de nivel INDEPENDIENTE del tap de audio.
+   * Antes el nivel se actualizaba dentro de push(), asi que si el tap no
+   * entregaba nada la onda tampoco se movia y no habia forma de distinguir
+   * "no llega audio" de "la interfaz esta congelada".
+   */
+  startLevelMeter() {
+    this.stopLevelMeter();
+    this.levelTimer = setInterval(() => {
+      if (!this.active) return;
+      this.lastLevel = this.analyser ? this.readLevel() : 0;
+      if (this.onLevel) this.onLevel(this.lastLevel);
+    }, 80);
+  }
+
+  stopLevelMeter() {
+    if (this.levelTimer) clearInterval(this.levelTimer);
+    this.levelTimer = 0;
   }
 
   /** Nivel 0..1 a partir del AnalyserNode (para la onda de la UI). */
@@ -188,17 +253,30 @@ export class MicCapture {
   }
 
   info() {
-    return { sampleRate: this.sampleRate, mode: this.mode, deviceLabel: this.deviceLabel };
+    return {
+      sampleRate: this.sampleRate,
+      mode: this.mode,
+      deviceLabel: this.deviceLabel,
+      constraintLabel: this.constraintLabel,
+      framesReceived: this.framesReceived,
+    };
+  }
+
+  /** true cuando el tap de audio esta entregando datos de verdad. */
+  isDelivering() {
+    return this.active && this.framesReceived > 0;
   }
 
   stop() {
     this.active = false;
+    this.stopLevelMeter();
     try {
       if (this.node) {
         if (this.node.port) this.node.port.onmessage = null;
         this.node.onaudioprocess = null;
         this.node.disconnect();
       }
+      if (this.sink) this.sink.disconnect();
       if (this.source) this.source.disconnect();
       if (this.analyser) this.analyser.disconnect();
     } catch (err) {
@@ -218,10 +296,12 @@ export class MicCapture {
     this.stream = null;
     this.source = null;
     this.node = null;
+    this.sink = null;
     this.analyser = null;
     this.buffer = null;
     this.writePos = 0;
     this.framesWritten = 0;
+    this.framesReceived = 0;
     this.mode = 'none';
     info('Captura detenida');
   }

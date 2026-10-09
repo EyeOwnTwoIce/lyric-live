@@ -196,7 +196,16 @@ Notas de implementacion pensadas para iOS:
 | *Cuota de AudD agotada* | Estas usando el token de evaluacion (10/dia). Pega el tuyo en Ajustes. |
 | La letra va desfasada siempre | Usa los botones de +/- 0,25 s; el ajuste se guarda para esa cancion. |
 | *No hay letra disponible* | LRCLIB no tiene esa cancion. La app muestra titulo y caratula igualmente. |
-| La letra se mueve a tirones | Es normal mientras se acumulan las primeras anclas. |
+| Se queda en «Escuchando…» y la onda no se mueve | Mira la línea bajo el botón: muestra **fragmentos** y **nivel**. Si el nivel está a 0 %, el micro no capta: acerca el dispositivo. Si pone «0 fragmentos», la app lo avisará sola en 5 s. |
+| Deja de oír tras una llamada o al cambiar de app | La app detecta que el micrófono ha muerto y lo reabre sola en unos 10 s. |
+| No sé qué está fallando | Panel **Diagnóstico → Último intento**: ahí aparece literalmente lo que respondió AudD (por ejemplo `error audd_901 (901): Cuota agotada`). Botón **Copiar diagnóstico** para enviarlo. |
+
+### Robustez pensada para móvil
+
+- **Escalera de constraints**: si el navegador rechaza las constraints que desactivan el procesado de voz (Safari lo ha hecho con `channelCount`), se reintenta degradando en vez de quedarse sin micrófono.
+- **Vigilante de entrega**: si en 5 s no llega ni un fragmento de audio, lo dice en pantalla en vez de simular que escucha.
+- **Auto-reparado**: si el grafo de audio muere (llamada entrante, cambio de app, bloqueo de pantalla), se detecta y se reabre el micrófono conservando la sesión.
+- **Indicador en vivo**: fragmentos recibidos y nivel de entrada, para distinguir «no llega audio» de «el reconocimiento falla».
 | No arranca el microfono en el ordenador | Asegurate de abrir `http://localhost` y no la IP de la red local. |
 
 Para depurar en el iPhone (donde no hay consola de desarrollo): boton **Copiar diagnostico**, o en la barra de direcciones `javascript:letraEnVivo.engine.snapshot()`.
