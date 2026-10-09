@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Letra en vivo</title>
+<meta name="description" content="Escucha musica en directo, reconoce la cancion y muestra su letra sincronizada.">
+<meta name="theme-color" content="#0b0f18">
+<meta name="color-scheme" content="dark light">
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Letra en vivo">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="icon" type="image/png" href="icons/icon-192.png">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<a class="skip-link" href="#btn-listen">Ir al boton de escucha</a>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-dot" aria-hidden="true"></span>
+    <h1>Letra en vivo</h1>
+  </div>
+  <div class="topbar-actions">
+    <span id="status-pill" class="pill" data-state="idle" role="status">En espera</span>
+    <button id="btn-settings" class="icon-btn" type="button" aria-label="Ajustes" aria-expanded="false">Ajustes</button>
+  </div>
+</header>
+
+<main class="layout">
+  <section class="stage" aria-label="Captura de audio">
+    <canvas id="waveform" class="waveform" width="640" height="120" aria-hidden="true"></canvas>
+
+    <button id="btn-listen" class="listen-btn" type="button" aria-pressed="false">
+      <span class="listen-ring" aria-hidden="true"></span>
+      <span id="listen-label" class="listen-label">Escuchar</span>
+    </button>
+
+    <p id="hint" class="hint">Pulsa <strong>Escuchar</strong> y permite el microfono. Acerca el movil a la musica.</p>
+    <p id="device-label" class="device-label" hidden></p>
+  </section>
+  <section class="nowplaying" aria-label="Cancion detectada">
+    <div class="art-wrap">
+      <img id="song-art" class="art" alt="" decoding="async">
+      <div id="art-placeholder" class="art art-placeholder" aria-hidden="true">♪</div>
+    </div>
+    <div class="song-text">
+      <h2 id="song-title" class="song-title">Sin deteccion todavia</h2>
+      <p id="song-artist" class="song-artist"></p>
+      <p id="song-meta" class="song-meta"></p>
+    </div>
+    <div class="confidence">
+      <span class="confidence-label" id="confidence-label">Confianza de sincronia</span>
+      <div class="bar" role="progressbar" aria-labelledby="confidence-label" aria-valuemin="0" aria-valuemax="100" id="confidence-bar">
+        <div id="confidence-fill" class="bar-fill"></div>
+      </div>
+      <span id="confidence-text" class="confidence-text">—</span>
+    </div>
+    <div class="nudge" role="group" aria-label="Ajuste fino de sincronia">
+      <button id="nudge-minus" class="btn small" type="button">−0,25 s</button>
+      <span id="offset-display" class="offset-display">0,00 s</span>
+      <button id="nudge-plus" class="btn small" type="button">+0,25 s</button>
+    </div>
+  </section>
+
+  <section class="lyrics-wrap" aria-label="Letra">
+    <div id="lyrics" class="lyrics" aria-live="polite" aria-atomic="false">
+      <p class="lyrics-empty">Aqui aparecera la letra sincronizada cuando se reconozca la cancion.</p>
+    </div>
+  </section>
+
+  <aside class="sidebar" aria-label="Panel lateral">
+    <div class="card">
+      <h3 class="card-title">Historial</h3>
+      <ul id="history-list" class="history-list"><li class="muted">Todavia no hay detecciones.</li></ul>
+    </div>
+    <div class="card">
+      <h3 class="card-title">Diagnostico</h3>
+      <dl class="diag" id="diag-list"></dl>
+      <div class="card-actions">
+        <button id="btn-diagnostics" class="btn small" type="button">Copiar diagnostico</button>
+      </div>
+    </div>
+    <div class="card">
+      <h3 class="card-title">Modo demo (sin microfono)</h3>
+      <p class="muted small">Prueba la cadena completa AudD → LRCLIB → sincronia usando un audio de ejemplo. Consume 1 peticion.</p>
+      <div class="card-actions">
+        <button id="btn-demo" class="btn small" type="button">Probar con audio de ejemplo</button>
+      </div>
+    </div>
+  </aside>
+</main>
+<div id="drift-banner" class="drift-banner" role="alertdialog" aria-labelledby="drift-text" hidden>
+  <p id="drift-text" class="drift-text"></p>
+  <div class="drift-actions">
+    <button id="btn-resync" class="btn primary" type="button">Re-sincronizar</button>
+    <button id="btn-ignore" class="btn" type="button">Ignorar</button>
+    <label class="check"><input type="checkbox" id="chk-no-ask"> No volver a preguntar</label>
+  </div>
+</div>
+
+<div id="error-box" class="error-box" role="alert" hidden>
+  <p id="error-text"></p>
+  <div class="drift-actions">
+    <button id="btn-error-action" class="btn primary" type="button" hidden>Abrir ajustes</button>
+    <button id="btn-error-close" class="btn" type="button">Cerrar</button>
+  </div>
+</div>
+
+<div id="scrim" class="scrim" hidden></div>
+
+<section id="settings-panel" class="drawer" role="dialog" aria-modal="true" aria-labelledby="settings-title" hidden>
+  <header class="drawer-head">
+    <h2 id="settings-title">Ajustes</h2>
+    <button id="btn-close-settings" class="icon-btn" type="button" aria-label="Cerrar ajustes">Cerrar</button>
+  </header>
+  <div class="drawer-body">
+    <label class="field">
+      <span class="field-label">Token de AudD</span>
+      <input id="input-token" class="input" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="pega aqui tu token de dashboard.audd.io">
+      <span class="field-help">Se guarda solo en este dispositivo. Sin token se usa el de evaluacion (10 peticiones/dia).</span>
+    </label>
+
+    <label class="field">
+      <span class="field-label">Cuando detecte desfase</span>
+      <select id="select-policy" class="input">
+        <option value="ask">Preguntarme (recomendado)</option>
+        <option value="auto">Re-sincronizar automaticamente</option>
+        <option value="never">No hacer nada (salvo desfase grave)</option>
+      </select>
+    </label>
+
+    <label class="field">
+      <span class="field-label">Duracion del clip enviado: <output id="out-clip">9</output> s</span>
+      <input id="input-clip" type="range" min="5" max="12" step="1" value="9">
+      <span class="field-help">AudD recomienda entre 2 y 12 segundos.</span>
+    </label>
+
+    <label class="field">
+      <span class="field-label">Re-escuchar cada <output id="out-interval">25</output> s cuando esta sincronizado</span>
+      <input id="input-interval" type="range" min="10" max="60" step="5" value="25">
+      <span class="field-help">Intervalos mas cortos = sincronia mas fiable, pero mas consumo de cuota.</span>
+    </label>
+
+    <label class="field check">
+      <input type="checkbox" id="chk-wake" checked>
+      <span>Mantener la pantalla encendida mientras escucha</span>
+    </label>
+
+    <label class="field check">
+      <input type="checkbox" id="chk-cache" checked>
+      <span>Guardar letras en cache para reutilizarlas (y poder verlas sin conexion)</span>
+    </label>
+
+    <label class="field">
+      <span class="field-label">Tema</span>
+      <select id="select-theme" class="input">
+        <option value="auto">Automatico</option>
+        <option value="dark">Oscuro</option>
+        <option value="light">Claro</option>
+      </select>
+    </label>
+
+    <div class="field">
+      <span class="field-label">Cache local</span>
+      <div class="card-actions">
+        <button id="btn-clear-cache" class="btn small" type="button">Borrar cache de letras</button>
+      </div>
+      <span id="cache-info" class="field-help"></span>
+    </div>
+
+    <div class="field">
+      <span class="field-label">Privacidad</span>
+      <p class="field-help">No hay servidor propio ni cuentas. Solo se envian clips cortos de audio a api.audd.io y consultas de texto a lrclib.net. Nunca se guarda audio.</p>
+    </div>
+  </div>
+</section>
+
+<div id="toasts" class="toasts" aria-live="polite" aria-atomic="false"></div>
+
+<noscript><p class="noscript">Esta aplicacion necesita JavaScript y acceso al microfono.</p></noscript>
+
+<script type="module" src="src/app.js"></script>
+</body>
+</html>
