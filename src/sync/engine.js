@@ -24,6 +24,8 @@ export class SyncEngine {
   reset() {
     this.anchors = [];
     this.offsetSec = 0;
+    this.hasOffset = false;
+    this.snapNext = false;
     this.manualOffsetSec = 0;
     this.driftSec = 0;
     this.severity = SEVERITY.NONE;
@@ -31,7 +33,6 @@ export class SyncEngine {
     this.correction = null;
     this.lastAnchorAt = 0;
     this.pauseSuspected = false;
-    this.anchorCount = 0;
   }
 
   /** Fija la cancion actual y permite un offset aprendido de sesiones previas. */
@@ -39,12 +40,13 @@ export class SyncEngine {
     this.song = song;
     this.anchors = [];
     this.offsetSec = 0;
+    this.hasOffset = false;
+    this.snapNext = false;
     this.manualOffsetSec = learnedOffsetSec || 0;
     this.driftSec = 0;
     this.severity = SEVERITY.NONE;
     this.correction = null;
     this.pauseSuspected = false;
-    this.anchorCount = 0;
   }
 
   /**
@@ -67,7 +69,6 @@ export class SyncEngine {
 
     this.anchors.push(anchor);
     if (this.anchors.length > CONFIG.sync.maxAnchors) this.anchors.shift();
-    this.anchorCount += 1;
     this.lastAnchorAt = nowSec();
 
     this.recomputeOffset();
@@ -75,17 +76,32 @@ export class SyncEngine {
     return anchor;
   }
 
-  /** Offset robusto: mediana de las anclas + suavizado exponencial. */
+  /**
+   * Offset robusto: mediana de las anclas + suavizado exponencial.
+   * En la primera estimacion y tras una re-sincronizacion se fija el valor
+   * nuevo (snapNext) animando la transicion, para no dejar la letra congelada
+   * ni dar un salto brusco.
+   */
   recomputeOffset() {
     if (!this.anchors.length) return;
     const offsets = this.anchors.map((a) => a.wallSec - a.songSec).sort((x, y) => x - y);
     const mid = offsets.length >> 1;
     const median = offsets.length % 2 ? offsets[mid] : (offsets[mid - 1] + offsets[mid]) / 2;
 
-    if (!this.offsetSec) {
+    if (!this.hasOffset || this.snapNext) {
+      const previous = this.hasOffset ? this.offsetSec : null;
+      const reason = this.snapNext ? 'resync' : 'init';
       this.offsetSec = median;
+      this.hasOffset = true;
+      this.snapNext = false;
+      if (previous !== null && Math.abs(previous - median) > 0.05) {
+        // delta = nuevo - viejo: en t=0 la posicion sigue valiendo lo mismo
+        // (continuidad, sin tiron) y al final de la animacion ya usa el nuevo.
+        this.correction = { delta: median - previous, startAt: nowSec(), reason };
+      }
       return;
     }
+
     const alpha = CONFIG.sync.smoothingAlpha;
     this.offsetSec = alpha * median + (1 - alpha) * this.offsetSec;
   }
@@ -123,9 +139,13 @@ export class SyncEngine {
     this.pauseSuspected = this.driftSec > CONFIG.sync.driftSoftSec && Math.abs(expected) < 1.5;
   }
 
-  /** Posicion actual en la cancion, con la correccion animada aplicada. */
+  /**
+   * Posicion actual en la cancion, con la correccion animada aplicada.
+   * Se apoya en el ultimo offset valido aunque no haya anclas: durante una
+   * re-sincronizacion la letra sigue avanzando en vez de quedarse congelada.
+   */
   positionAt(wallSec = nowSec()) {
-    if (!this.anchors.length) return null;
+    if (!this.hasOffset) return null;
     let position = wallSec - this.offsetSec + this.manualOffsetSec;
 
     if (this.correction) {
@@ -136,23 +156,6 @@ export class SyncEngine {
       if (t >= 1) this.correction = null;
     }
     return position;
-  }
-
-  /** Aplica una correccion suave del offset (evita saltos bruscos en la UI). */
-  applyCorrection(reason = 'manual') {
-    const offsets = this.anchors.map((a) => a.wallSec - a.songSec).sort((x, y) => x - y);
-    if (!offsets.length) return false;
-    const mid = offsets.length >> 1;
-    const median = offsets.length % 2 ? offsets[mid] : (offsets[mid - 1] + offsets[mid]) / 2;
-
-    const previous = this.offsetSec;
-    this.offsetSec = median;
-    this.correction = { delta: previous - median, startAt: nowSec(), reason };
-    this.driftSec = 0;
-    this.severity = SEVERITY.NONE;
-    this.pauseSuspected = false;
-    debug('Correccion aplicada', { from: previous, to: median, reason });
-    return true;
   }
 
   /** Ajuste fino manual: desplaza la letra sin tocar el modelo de anclas. */
@@ -209,6 +212,7 @@ export class SyncEngine {
   snapshot() {
     return {
       offsetSec: this.offsetSec,
+      hasOffset: this.hasOffset,
       manualOffsetSec: this.manualOffsetSec,
       driftSec: this.driftSec,
       severity: this.severity,

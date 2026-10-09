@@ -69,6 +69,7 @@ const app = {
   errorBackoffIndex: 0,
   wakeLock: null,
   bannerShownForDrift: false,
+  pauseNoticeShown: false,
   resyncPending: false,
   pendingSongKey: null,
   started: false,
@@ -147,7 +148,9 @@ function wireEvents() {
     if (event.target.checked) updateSetting('syncPolicy', 'auto');
   });
 
-  $('btn-demo').addEventListener('click', runDemo);
+  $('btn-demo').addEventListener('click', () => {
+    runDemo().catch((err) => logError('Error en el modo demo', err));
+  });
   $('btn-diagnostics').addEventListener('click', copyDiagnostics);
   $('btn-clear-cache').addEventListener('click', clearCaches);
 
@@ -193,6 +196,24 @@ function updateSetting(key, value) {
   app.settings = { ...app.settings, [key]: value };
   storage.saveSettings(app.settings);
   debug('Ajuste guardado', key, value);
+  if (key === 'token') recoverAfterTokenChange();
+}
+
+/**
+ * Al pegar un token nuevo, si el bucle estaba detenido por cuota o error hay
+ * que reanudarlo. Antes la app se quedaba muerta hasta parar y volver a
+ * empezar la escucha, que es justo lo que el usuario no espera.
+ */
+function recoverAfterTokenChange() {
+  app.errorBackoffIndex = 0;
+  if (!app.capture.active) return;
+  if (app.state !== STATE.QUOTA && app.state !== STATE.ERROR) return;
+  hideError();
+  app.misses = 0;
+  app.bannerShownForDrift = false;
+  setState(STATE.SEARCHING);
+  app.renderer.setHint('Token actualizado: volviendo a escuchar…');
+  scheduleNext(0);
 }
 
 function openSettings(open) {
@@ -350,19 +371,29 @@ async function runRecognition() {
     app.inFlight = false;
   }
 
-  handleRecognition(result, { wallEnd: clip.wallEnd, clipSeconds });
+  await handleRecognition(result, { wallEnd: clip.wallEnd, clipSeconds });
 }
 
-function handleRecognition(result, ctx) {
-  if (!result || !result.ok) {
-    handleFailure(result);
-    return;
+/**
+ * Cualquier excepcion aqui NO puede matar el bucle. Si handleMatch falla, se
+ * registra y se reprograma el siguiente ciclo. Antes, un throw soltaba una
+ * promesa sin capturar y la app se quedaba muda para siempre.
+ */
+async function handleRecognition(result, ctx) {
+  try {
+    if (!result || !result.ok) {
+      handleFailure(result);
+      return;
+    }
+    if (!result.matched) {
+      handleMiss();
+      return;
+    }
+    await handleMatch(result, ctx);
+  } catch (err) {
+    logError('Error procesando el reconocimiento', err);
+    scheduleNext(intervalForState());
   }
-  if (!result.matched) {
-    handleMiss();
-    return;
-  }
-  handleMatch(result, ctx);
 }
 
 function handleFailure(result) {
@@ -566,6 +597,16 @@ function handleDrift() {
   const severity = app.engine.severity;
   if (severity === SEVERITY.NONE) return;
 
+  // Si la musica esta en pausa, volver a escuchar no arregla nada y solo
+  // gastaria una peticion en cada ciclo. Se avisa una vez y se espera.
+  if (app.engine.pauseSuspected) {
+    if (!app.pauseNoticeShown) {
+      app.pauseNoticeShown = true;
+      toast('La musica parece en pausa. La letra se recolocara sola al continuar.', 'warn');
+    }
+    return;
+  }
+
   if (severity === SEVERITY.HARD) {
     toast(`Desfase grave (${app.engine.driftLabel()}). Re-sincronizando.`, 'warn');
     doResync('deriva grave');
@@ -612,8 +653,11 @@ function doResync(reason) {
   info('Re-sincronizando', reason);
   hideDriftBanner();
   setState(STATE.RESYNCING);
+  // Conservamos el offset vigente y pedimos que la proxima ancla lo sustituya
+  // de golpe (con animacion): asi la letra sigue avanzando en vez de quedarse
+  // congelada mientras llega la nueva escucha.
   app.engine.anchors = [];
-  app.engine.offsetSec = 0;
+  app.engine.snapNext = true;
   app.engine.driftSec = 0;
   app.engine.severity = SEVERITY.NONE;
   app.engine.pauseSuspected = false;
@@ -639,7 +683,11 @@ function startPlaybackLoop() {
       lastConfidenceAt = now;
       app.renderer.setConfidence(app.engine.confidence());
       app.renderer.setOffsetDisplay(app.engine.manualOffsetSec);
-      if (app.engine.needsResync() && !app.resyncPending && app.state === STATE.SYNCED) {
+      if (app.engine.severity === SEVERITY.NONE) {
+        // Vuelta a la normalidad: rearmamos los avisos.
+        app.bannerShownForDrift = false;
+        app.pauseNoticeShown = false;
+      } else if (!app.resyncPending && app.state === STATE.SYNCED) {
         handleDrift();
       }
     }

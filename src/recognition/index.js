@@ -17,10 +17,6 @@ export function getProvider(name = CONFIG.recognition.provider) {
   return provider;
 }
 
-export function providerName(name = CONFIG.recognition.provider) {
-  return getProvider(name).PROVIDER_NAME || name;
-}
-
 /**
  * Traduce los resultados normalizados a mensajes de UI.
  * Devuelve null cuando no hay nada que decir al usuario.

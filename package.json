@@ -1,0 +1,18 @@
+{
+  "name": "lyric-live",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Letra en vivo: webapp que escucha musica, reconoce la cancion y muestra su letra sincronizada en directo.",
+  "homepage": "https://eyeowntwoice.github.io/lyric-live/",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/EyeOwnTwoIce/lyric-live.git"
+  },
+  "license": "MIT",
+  "scripts": {
+    "start": "python3 tools/serve.py 8080",
+    "test": "node --test tools/*.test.mjs",
+    "icons": "python3 tools/make-icons.py"
+  }
+}

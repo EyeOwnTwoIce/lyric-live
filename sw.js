@@ -8,7 +8,7 @@
  * Nunca interceptamos peticiones a otras origenes (api.audd.io, lrclib.net)
  * ni metodos distintos de GET.
  */
-const VERSION = 'lyric-live-v1.0.0';
+const VERSION = 'lyric-live-v1.1.0';
 
 const SHELL = [
   './',

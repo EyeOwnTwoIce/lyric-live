@@ -90,6 +90,16 @@ Regenerar los iconos:
 python3 tools/make-icons.py
 ```
 
+### Tests
+
+El motor de sincronía y el parser de LRC son lógica pura y sutil, así que tienen batería de pruebas propia. Sin dependencias ni red:
+
+```bash
+npm test          # o: node --test tools/*.test.mjs
+```
+
+Cubren el cálculo de offset, el suavizado, el descarte de anclas absurdas, los umbrales de deriva (leve y grave), la detección de pausa, la continuidad de la corrección al re-sincronizar, el ajuste manual, y el parser LRC (etiquetas múltiples, sincronía por palabra, offset global, letra sin sincronizar, entradas inválidas).
+
 ---
 
 ## Estructura del proyecto
@@ -101,6 +111,8 @@ manifest.webmanifest           Metadatos de app instalable
 sw.js                          Service worker (red primero, cache de respaldo)
 serve.sh / tools/serve.py      Servidor local multihilo
 tools/make-icons.py            Generador de iconos sin dependencias
+tools/engine.test.mjs          Tests del motor de sincronia y del parser LRC
+package.json                   type: module + scripts (start, test, icons)
 src/
   app.js                       Maquina de estados y orquestacion
   config.js                    Todos los parametros ajustables

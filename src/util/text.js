@@ -49,8 +49,3 @@ export function songKey({ isrc, artist, title, durationSec }) {
   const bucket = durationSec ? Math.round(Number(durationSec) / 5) * 5 : 0;
   return `${base}_${bucket}`;
 }
-
-/** Escapa texto para insertarlo como contenido (no usamos innerHTML con datos). */
-export function titleCase(value) {
-  return String(value || '').replace(/\b\w/g, (c) => c.toUpperCase());
-}

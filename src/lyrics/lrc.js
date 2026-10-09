@@ -67,7 +67,9 @@ export function parseLRC(text) {
       times.push(toSeconds(timeMatch[1], timeMatch[2], timeMatch[3]));
       timeMatch = TIME_RE.exec(raw);
     }
-    if (!times.length) continue;
+    // Hay LRC enriquecido que solo trae marcas de palabra, sin etiqueta de
+    // linea: en ese caso el tiempo de la linea es el de su primera palabra.
+    if (!times.length && !words.length) continue;
 
     const body = raw
       .replace(TIME_RE, '')
@@ -78,7 +80,8 @@ export function parseLRC(text) {
     const lineTime = Math.min(...times, ...(words.length ? [words[0].time] : []));
     if (words.length) result.hasWordSync = true;
 
-    for (const time of times) {
+    const effectiveTimes = times.length ? times : [lineTime];
+    for (const time of effectiveTimes) {
       result.lines.push({
         time: offsetMs ? Math.max(0, time - offsetMs / 1000) : time,
         text: body,

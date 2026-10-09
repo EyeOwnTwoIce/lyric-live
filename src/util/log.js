@@ -28,10 +28,6 @@ function stringify(value) {
   }
 }
 
-export function setLevel(name) {
-  if (LEVELS[name]) minLevel = LEVELS[name];
-}
-
 function emit(levelName, consoleFn) {
   return (...args) => {
     push(levelName, args);
